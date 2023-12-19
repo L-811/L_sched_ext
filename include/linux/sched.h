@@ -745,6 +745,8 @@ struct kmap_ctrl {
 #endif
 };
 
+// 定义task_struct，包含了关于进程的所有必要信息
+// task创建有两种方式：fork、exec
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -800,6 +802,7 @@ struct task_struct {
 #ifdef CONFIG_SCHED_CLASS_EXT
 	struct sched_ext_entity		scx;
 #endif
+	// 一个包含指向各种调度方法的函数指针的结构体指针，只是一个接口，具体实现在各个调度类的代码中
 	const struct sched_class	*sched_class;
 
 #ifdef CONFIG_SCHED_CORE
@@ -836,7 +839,7 @@ struct task_struct {
 	unsigned int			btrace_seq;
 #endif
 
-	unsigned int			policy;
+	unsigned int			policy; // 该进程真正实行的调度策略
 	int				nr_cpus_allowed;
 	const cpumask_t			*cpus_ptr;
 	cpumask_t			*user_cpus_ptr;

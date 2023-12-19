@@ -155,6 +155,7 @@ static unsigned long __percpu *scx_kick_cpus_pnt_seqs;
  */
 static DEFINE_PER_CPU(struct task_struct *, direct_dispatch_task);
 
+// global dsq的设置：和local定义是一样的，只不过它位置不一样，是global的
 /* dispatch queues */
 static struct scx_dispatch_q __cacheline_aligned_in_smp scx_dsq_global;
 
@@ -626,6 +627,7 @@ static bool scx_dsq_priq_less(struct rb_node *node_a,
 	return time_before64(a->scx.dsq_vtime, b->scx.dsq_vtime);
 }
 
+// 真正的入队函数：根据入队标志，可以选择分发到prio队列，fifo队列队头、fifo队列队尾（三选一）
 static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 			     u64 enq_flags)
 {
@@ -835,6 +837,7 @@ static bool test_rq_online(struct rq *rq)
 #endif
 }
 
+// 真正的任务入队
 static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 			    int sticky_cpu)
 {
@@ -849,6 +852,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	}
 
 	/* rq migration */
+	// 如果目标CPU和当前CPU相同
 	if (sticky_cpu == cpu_of(rq))
 		goto local_norefill;
 
@@ -857,6 +861,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	 * offline. We're just trying to on/offline the CPU. Don't bother the
 	 * BPF scheduler.
 	 */
+	// rq不在线offline：走local
 	if (unlikely(!test_rq_online(rq)))
 		goto local;
 
@@ -870,6 +875,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	    (enq_flags & SCX_ENQ_LAST))
 		goto local;
 
+	// 如果没有自定义enqueue函数则根据标志位决定走global还是local
 	if (!SCX_HAS_OP(enqueue)) {
 		if (enq_flags & SCX_ENQ_LOCAL)
 			goto local;
@@ -887,6 +893,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	WARN_ON_ONCE(*ddsp_taskp);
 	*ddsp_taskp = p;
 
+	// 如果重载了ops.enqueue则调用自己写的
 	SCX_CALL_OP_TASK(SCX_KF_ENQUEUE, enqueue, p, enq_flags);
 
 	/*
@@ -907,6 +914,7 @@ local:
 	touch_core_sched(rq, p);
 	p->scx.slice = SCX_SLICE_DFL;
 local_norefill:
+	// 将任务排队到本地dsq
 	dispatch_enqueue(&rq->scx.local_dsq, p, enq_flags);
 	return;
 
@@ -939,6 +947,7 @@ static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
 
 static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
 {
+	// 在哪个CPU上运行
 	int sticky_cpu = p->scx.sticky_cpu;
 
 	enq_flags |= rq->scx.extra_enq_flags;
@@ -970,7 +979,8 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
 
 	if (enq_flags & SCX_ENQ_WAKEUP)
 		touch_core_sched(rq, p);
-
+	
+	// 设置完上述属性后，调用该函数实现真正的任务入队
 	do_enqueue_task(rq, p, enq_flags, sticky_cpu);
 }
 
@@ -1218,6 +1228,11 @@ static bool task_can_run_on_rq(struct task_struct *p, struct rq *rq)
 		cpumask_test_cpu(cpu_of(rq), p->cpus_ptr);
 }
 
+/*
+实际将任务插入到相应的运行队列中，第三个参数是任意的dsq，因此可以从任意一个rq放到另一个rq：例如可以将global的任务分派到local中
+对于给定dsq的fifo队列及prio队列中的每一个任务p进行分配，分配到rq上
+分为This_rq / remote_rq两种情况
+*/
 static bool consume_dispatch_q(struct rq *rq, struct rq_flags *rf,
 			       struct scx_dispatch_q *dsq)
 {
@@ -1257,6 +1272,7 @@ this_rq:
 	/* @dsq is locked and @p is on this rq */
 	WARN_ON_ONCE(p->scx.holding_cpu >= 0);
 	task_unlink_from_dsq(p, dsq);
+	// 任务放到当前cpu的local队列
 	list_add_tail(&p->scx.dsq_node.fifo, &scx_rq->local_dsq.fifo);
 	dsq->nr--;
 	scx_rq->local_dsq.nr++;
@@ -1283,6 +1299,7 @@ remote_rq:
 	double_lock_balance(rq, task_rq);
 	rq_repin_lock(rq, rf);
 
+	// 任务p从别的cpu上拿过来
 	moved = move_task_to_local_dsq(rq, p, 0);
 
 	double_unlock_balance(rq, task_rq);
@@ -1503,14 +1520,17 @@ retry:
 	}
 }
 
+// 将缓冲区中的任务分发到处理器调度队列runqueue中
 static void flush_dispatch_buf(struct rq *rq, struct rq_flags *rf)
 {
 	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
 	u32 u;
 
+	// 遍历buffer
 	for (u = 0; u < dspc->buf_cursor; u++) {
 		struct scx_dsp_buf_ent *ent = &this_cpu_ptr(scx_dsp_buf)[u];
 
+		// 将buffer中每个元素（任务）都添加到指定队列中
 		finish_dispatch(rq, rf, ent->task, ent->qseq, ent->dsq_id,
 				ent->enq_flags);
 	}
@@ -1519,6 +1539,13 @@ static void flush_dispatch_buf(struct rq *rq, struct rq_flags *rf)
 	dspc->buf_cursor = 0;
 }
 
+/*
+Balance_one 有对dispatch的调用，该函数在schedule内会有涉及，目的是给local分任务，只要local有任务就返回
+1.如果local有，直接取出
+2.若没有，global队列取任务
+3.若仍没有任务，进入循环：自定义的dispatch，每次执行完都会清空缓冲区，重复1，2
+4.若循环一定次数后仍没有任务，则再次kick_cpu()
+*/
 static int balance_one(struct rq *rq, struct task_struct *prev,
 		       struct rq_flags *rf, bool local)
 {
@@ -1571,12 +1598,15 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 	}
 
 	/* if there already are tasks to run, nothing to do */
+	// 从这里可以看出global的优先级低于local，因为CPU只会从local中取任务执行而非从global中取
+
+	// 如果local上已经有可运行的任务则直接return
 	if (scx_rq->local_dsq.nr)
 		return 1;
-
+	// 在这里尝试从全局dsq中获取任务并分派到本地dsq
 	if (consume_dispatch_q(rq, rf, &scx_dsq_global))
 		return 1;
-
+	// 是否自定义dispatch操作
 	if (!SCX_HAS_OP(dispatch))
 		return 0;
 
@@ -1593,11 +1623,14 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 	do {
 		dspc->nr_tasks = 0;
 
+		// 调用自定义dispatch操作
 		SCX_CALL_OP(SCX_KF_DISPATCH, dispatch, cpu_of(rq),
 			    prev_on_scx ? prev : NULL);
 
+		// 从buffer里分发任务，但要先清空
 		flush_dispatch_buf(rq, rf);
 
+		// 也是先看local有没有再从global中调用dispatch分派
 		if (scx_rq->local_dsq.nr)
 			return 1;
 		if (consume_dispatch_q(rq, rf, &scx_dsq_global))
@@ -1612,7 +1645,9 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		 * next, most likely idle, task, not the current one. Use
 		 * scx_bpf_kick_cpu() for deferred kicking.
 		 */
+		// 如果仍然还没有任务就kick_cpu
 		if (unlikely(!--nr_loops)) {
+			// 触发cpu进行重新调度：再找一找还有没有任务
 			scx_bpf_kick_cpu(cpu_of(rq), 0);
 			break;
 		}
@@ -1784,6 +1819,7 @@ static struct task_struct *first_local_task(struct rq *rq)
 					struct task_struct, scx.dsq_node.fifo);
 }
 
+// scx下具体的pick_next_task
 static struct task_struct *pick_next_task_scx(struct rq *rq)
 {
 	struct task_struct *p;
@@ -1794,6 +1830,7 @@ static struct task_struct *pick_next_task_scx(struct rq *rq)
 		balance_scx(rq, rq->curr, NULL);
 #endif
 
+	// 选择local队列的第一个任务
 	p = first_local_task(rq);
 	if (!p)
 		return NULL;
@@ -2052,11 +2089,14 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	return prev_cpu;
 }
 
+// scx下的select_cpu
 static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
 {
+	// 看是否有自己定义的select_cpu
 	if (SCX_HAS_OP(select_cpu)) {
 		s32 cpu;
 
+		// 这里调用自己定义的select_cpu
 		cpu = SCX_CALL_OP_TASK_RET(SCX_KF_REST, select_cpu, p, prev_cpu,
 					   wake_flags);
 		if (ops_cpu_valid(cpu)) {
@@ -2895,6 +2935,7 @@ static void scx_cgroup_config_knobs(void) {}
  * Used by sched_fork() and __setscheduler_prio() to pick the matching
  * sched_class. dl/rt are already handled.
  */
+// 判断是否需要启动scx：如果switch_all开关打开且enabled了scx，则启动
 bool task_should_scx(struct task_struct *p)
 {
 	if (!scx_enabled() || scx_ops_disabling())
@@ -3184,6 +3225,7 @@ static struct kthread_worker *scx_create_rt_helper(const char *name)
 	return helper;
 }
 
+// 有两个主要任务：enable和switch_all字段的重写
 static int scx_ops_enable(struct sched_ext_ops *ops)
 {
 	struct scx_task_iter sti;
@@ -3192,6 +3234,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 
 	mutex_lock(&scx_ops_enable_mutex);
 
+	// 检查scx_ops_helper，如果为空的话需要创建并回写指针
 	if (!scx_ops_helper) {
 		WRITE_ONCE(scx_ops_helper,
 			   scx_create_rt_helper("sched_ext_ops_helper"));
@@ -3201,6 +3244,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		}
 	}
 
+	// 读取运行状态，如果不是被禁用则继续进行
 	if (scx_ops_enable_state() != SCX_OPS_DISABLED) {
 		ret = -EBUSY;
 		goto err_unlock;
@@ -3215,6 +3259,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_PREPPING) !=
 		     SCX_OPS_DISABLED);
 
+	// 初始化一些字段的大小、类型、具体值
 	memset(&scx_exit_info, 0, sizeof(scx_exit_info));
 	atomic_set(&scx_exit_kind, SCX_EXIT_NONE);
 	scx_warned_zero_slice = false;
@@ -3227,6 +3272,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	 */
 	cpus_read_lock();
 
+	// 调用用户自定义的init函数
 	scx_switch_all_req = false;
 	if (scx_ops.init) {
 		ret = SCX_CALL_OP_RET(SCX_KF_INIT, init);
@@ -3248,6 +3294,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	}
 
 	WARN_ON_ONCE(scx_dsp_buf);
+	// 初始化dispatch_buffer
 	scx_dsp_max_batch = ops->dispatch_max_batch ?: SCX_DSP_DFL_MAX_BATCH;
 	scx_dsp_buf = __alloc_percpu(sizeof(scx_dsp_buf[0]) * scx_dsp_max_batch,
 				     __alignof__(scx_dsp_buf[0]));
@@ -3354,8 +3401,14 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	 * transitions here are synchronized against sched_ext_free() through
 	 * scx_tasks_lock.
 	 */
+	// 将scx_switch_all_req写入scx_switching_all中，如果打开则将所有非rt和dl任务都设置成ext任务，但自己写的例子可以重写这个部分
 	WRITE_ONCE(scx_switching_all, scx_switch_all_req);
 
+	/*
+	创建一个迭代器，遍历所有任务p
+	如果任务状态是TASK_DEAD,  禁用此任务
+	否则，拿出并启用task，修改调度策略，检查是否变化，放回
+	*/
 	scx_task_iter_init(&sti);
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		if (READ_ONCE(p->__state) != TASK_DEAD) {
@@ -3572,6 +3625,7 @@ static int bpf_scx_check_member(const struct btf_type *t,
 	return 0;
 }
 
+// reg对应的具体实现，这个enable函数很长但没有什么有用的东西
 static int bpf_scx_reg(void *kdata)
 {
 	return scx_ops_enable(kdata);
@@ -3615,16 +3669,25 @@ static int bpf_scx_validate(void *kdata)
 /* "extern" to avoid sparse warning, only used in this file */
 extern struct bpf_struct_ops bpf_sched_ext_ops;
 
+// bpf_struct_ops在scx下的具体实现，替换了sched_ext_ops
+/*
+基本流程（注释翻译）：一个基本的机制，有一系列函数接口，实现各种功能，会用就可以了
+内核在获取到用户空间的请求后
+首先调用init()函数，进行一切所必需的全局设置。
+check_member()函数决定是否允许目标结构的特定成员在BPF中实现，而init_member()则用于验证该结构中所有字段的确切值，init_member()可以验证非函数字段（例如flag字段）。 
+在检查通过后，则通过reg()函数进行实际地注册替换结构，此场景下是sched_ext_ops
+unreg()则用于撤消操作。
+*/
 struct bpf_struct_ops bpf_sched_ext_ops = {
 	.verifier_ops = &bpf_scx_verifier_ops,
-	.reg = bpf_scx_reg,
+	.reg = bpf_scx_reg, // 把自己定义的代码注入到内核中的函数
 	.unreg = bpf_scx_unreg,
 	.check_member = bpf_scx_check_member,
 	.init_member = bpf_scx_init_member,
 	.init = bpf_scx_init,
 	.update = bpf_scx_update,
 	.validate = bpf_scx_validate,
-	.name = "sched_ext_ops",
+	.name = "sched_ext_ops", // 要替换的结构体，其定义在include/linux/sched/ext.h中
 };
 
 static void sysrq_handle_sched_ext_reset(u8 key)
@@ -3732,6 +3795,7 @@ void print_scx_info(const char *log_lvl, struct task_struct *p)
 	       runnable_at_buf);
 }
 
+// 具体的初始化SCX，也是__init修饰
 void __init init_sched_ext_class(void)
 {
 	int cpu;
@@ -3746,7 +3810,7 @@ void __init init_sched_ext_class(void)
 		   SCX_TG_ONLINE | SCX_KICK_PREEMPT);
 
 	BUG_ON(rhashtable_init(&dsq_hash, &dsq_hash_params));
-	init_dsq(&scx_dsq_global, SCX_DSQ_GLOBAL);
+	init_dsq(&scx_dsq_global, SCX_DSQ_GLOBAL); // global队列的初始化
 #ifdef CONFIG_SMP
 	BUG_ON(!alloc_cpumask_var(&idle_masks.cpu, GFP_KERNEL));
 	BUG_ON(!alloc_cpumask_var(&idle_masks.smt, GFP_KERNEL));
@@ -3760,7 +3824,7 @@ void __init init_sched_ext_class(void)
 	for_each_possible_cpu(cpu) {
 		struct rq *rq = cpu_rq(cpu);
 
-		init_dsq(&rq->scx.local_dsq, SCX_DSQ_LOCAL);
+		init_dsq(&rq->scx.local_dsq, SCX_DSQ_LOCAL); // 每个CPU上的local队列的初始化
 		INIT_LIST_HEAD(&rq->scx.watchdog_list);
 
 		BUG_ON(!zalloc_cpumask_var(&rq->scx.cpus_to_kick, GFP_KERNEL));
@@ -3856,27 +3920,31 @@ static bool scx_dispatch_preamble(struct task_struct *p, u64 enq_flags)
 	return true;
 }
 
+// 实际的分配操作
 static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags)
 {
 	struct task_struct *ddsp_task;
 	int idx;
 
+	// 直接分发的任务：直接入队
 	ddsp_task = __this_cpu_read(direct_dispatch_task);
 	if (ddsp_task) {
 		direct_dispatch(ddsp_task, p, dsq_id, enq_flags);
 		return;
 	}
 
+	// buffer在ops.enable函数中初始化
 	idx = __this_cpu_read(scx_dsp_ctx.buf_cursor);
 	if (unlikely(idx >= scx_dsp_max_batch)) {
 		scx_ops_error("dispatch buffer overflow");
 		return;
 	}
 
+	// 把buffer对应id（id作为下标记号）中的任务，记录到应该放到哪个dsq上
 	this_cpu_ptr(scx_dsp_buf)[idx] = (struct scx_dsp_buf_ent){
 		.task = p,
 		.qseq = atomic_long_read(&p->scx.ops_state) & SCX_OPSS_QSEQ_MASK,
-		.dsq_id = dsq_id,
+		.dsq_id = dsq_id, // 标记对应的dsq_id
 		.enq_flags = enq_flags,
 	};
 	__this_cpu_inc(scx_dsp_ctx.buf_cursor);
@@ -3914,6 +3982,7 @@ static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags
 void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
 		      u64 enq_flags)
 {
+	// 检查相关参数
 	if (!scx_dispatch_preamble(p, enq_flags))
 		return;
 
@@ -3922,6 +3991,7 @@ void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
 	else
 		p->scx.slice = p->scx.slice ?: 1;
 
+	// 实际的分配
 	scx_dispatch_commit(p, dsq_id, enq_flags);
 }
 
@@ -4015,6 +4085,7 @@ bool scx_bpf_consume(u64 dsq_id)
 	if (!scx_kf_allowed(SCX_KF_DISPATCH))
 		return false;
 
+	// 将buffer中的任务真正分配到指定的dsq上，保证dsq上的任务尽可能多
 	flush_dispatch_buf(dspc->rq, dspc->rf);
 
 	dsq = find_non_local_dsq(dsq_id);
@@ -4023,6 +4094,7 @@ bool scx_bpf_consume(u64 dsq_id)
 		return false;
 	}
 
+	// 从指定的dsq上取任务到当前的cpu：从dsq到dspc->rq
 	if (consume_dispatch_q(dspc->rq, dspc->rf, dsq)) {
 		/*
 		 * A successfully consumed task can be dequeued before it starts

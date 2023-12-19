@@ -139,6 +139,7 @@ void BPF_STRUCT_OPS(simple_exit, struct scx_exit_info *ei)
 	uei_record(&uei, ei);
 }
 
+// 在simple例子中对sched_ext_ops的具体实现，以下这些元素可以自定义
 SEC(".struct_ops.link")
 struct sched_ext_ops simple_ops = {
 	.enqueue		= (void *)simple_enqueue,

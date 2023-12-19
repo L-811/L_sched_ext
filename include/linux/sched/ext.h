@@ -594,6 +594,7 @@ struct scx_dispatch_q {
 };
 
 /* scx_entity.flags */
+// flags标志位，表示任务的状态
 enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
@@ -621,6 +622,10 @@ enum scx_ent_dsq_flags {
  * kfuncs depending on the calling context which will replace this manual
  * mechanism. See scx_kf_allow().
  */
+// 标记允许使用的内核函数：通过标志位实现
+/*
+并非所有的 kfuncs（内核函数）都可以从任何地方调用，下面的位用于追踪当前 %current（当前任务）允许的 kfunc 集合。这种简单的每个任务跟踪方式有效的原因是 SCX操作在有限的方式下嵌套。BPF 可能会实现一种根据调用上下文允许或禁止 kfuncs 的方式，以取代这种手动的机制。
+*/
 enum scx_kf_mask {
 	SCX_KF_UNLOCKED		= 0,	  /* not sleepable, not rq locked */
 	/* all non-sleepables may be nested inside INIT and SLEEPABLE */

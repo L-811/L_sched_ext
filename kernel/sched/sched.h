@@ -688,8 +688,9 @@ enum scx_rq_flags {
 	SCX_RQ_CAN_STOP_TICK	= 1 << 0,
 };
 
+// 真正定义scx_rq的地方
 struct scx_rq {
-	struct scx_dispatch_q	local_dsq;
+	struct scx_dispatch_q	local_dsq; // 每个CPU都有的local dsq
 	struct list_head	watchdog_list;
 	unsigned long		ops_qseq;
 	u64			extra_enq_flags;	/* see move_task_to_local_dsq() */
@@ -1045,7 +1046,7 @@ struct rq {
 	struct rt_rq		rt;
 	struct dl_rq		dl;
 #ifdef CONFIG_SCHED_CLASS_EXT
-	struct scx_rq		scx;
+	struct scx_rq		scx; // 声明scx_rq要存在
 #endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

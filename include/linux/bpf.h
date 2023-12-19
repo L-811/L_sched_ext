@@ -1613,6 +1613,8 @@ struct btf_member;
  * @type_id: BTF type id.
  * @value_id: BTF value id.
  */
+
+// bpf_struct_ops本来的定义
 struct bpf_struct_ops {
 	const struct bpf_verifier_ops *verifier_ops;
 	int (*init)(struct btf *btf);

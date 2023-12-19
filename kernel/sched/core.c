@@ -2102,6 +2102,7 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 		psi_enqueue(p, (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED));
 	}
 
+	// 调用对应调度类的enqueue_task
 	uclamp_rq_inc(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
 
@@ -3627,14 +3628,18 @@ out:
 /*
  * The caller (fork, wakeup) owns p->pi_lock, ->cpus_ptr is stable.
  */
+// 三条选核路径都会到这里具体实现
 static inline
 int select_task_rq(struct task_struct *p, int cpu, int wake_flags)
 {
 	lockdep_assert_held(&p->pi_lock);
 
+	// 若任务允许运行在多个CPU上且未禁用迁核
 	if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p))
+		// 调用对应调度类下的select_task_rq
 		cpu = p->sched_class->select_task_rq(p, cpu, wake_flags);
 	else
+		// 否则选择任务可运行的任一CPU
 		cpu = cpumask_any(p->cpus_ptr);
 
 	/*
@@ -3647,6 +3652,7 @@ int select_task_rq(struct task_struct *p, int cpu, int wake_flags)
 	 * [ this allows ->select_task() to simply return task_cpu(p) and
 	 *   not worry about this generic constraint ]
 	 */
+	// 还会检查任务是否被允许在选定的cpu上运行，如果不行就选择备用的rq
 	if (unlikely(!is_cpu_allowed(p, cpu)))
 		cpu = select_fallback_rq(task_cpu(p), p);
 
@@ -4517,6 +4523,7 @@ int wake_up_state(struct task_struct *p, unsigned int state)
  *
  * __sched_fork() is basic setup used by init_idle() too:
  */
+// 设置通用的sched属性
 static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	p->on_rq			= 0;
@@ -4551,16 +4558,17 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->rt.on_rq		= 0;
 	p->rt.on_list		= 0;
 
+// 如果是scx调度类则还会添加这些属性
 #ifdef CONFIG_SCHED_CLASS_EXT
 	p->scx.dsq		= NULL;
 	INIT_LIST_HEAD(&p->scx.dsq_node.fifo);
 	RB_CLEAR_NODE(&p->scx.dsq_node.priq);
 	INIT_LIST_HEAD(&p->scx.watchdog_node);
-	p->scx.flags		= 0;
+	p->scx.flags		= 0; // 任务的状态
 	p->scx.weight		= 0;
 	p->scx.sticky_cpu	= -1;
 	p->scx.holding_cpu	= -1;
-	p->scx.kf_mask		= 0;
+	p->scx.kf_mask		= 0; // 一些允许使用的内核函数
 	atomic_long_set(&p->scx.ops_state, 0);
 	p->scx.runnable_at	= INITIAL_JIFFIES;
 	p->scx.slice		= SCX_SLICE_DFL;
@@ -4771,6 +4779,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	int ret;
 
+	// task的通用设置
 	__sched_fork(clone_flags, p);
 	/*
 	 * We mark the process as NEW here. This guarantees that
@@ -4814,6 +4823,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		goto out_cancel;
 	} else if (rt_prio(p->prio)) {
 		p->sched_class = &rt_sched_class;
+	// 判断scx调度类是否被启用
 #ifdef CONFIG_SCHED_CLASS_EXT
 	} else if (task_should_scx(p)) {
 		p->sched_class = &ext_sched_class;
@@ -4909,6 +4919,7 @@ unsigned long to_ratio(u64 period, u64 runtime)
  * that must be done for every newly created context, then puts the task
  * on the runqueue and wakes it.
  */
+// 会第一次唤醒新创建的任务
 void wake_up_new_task(struct task_struct *p)
 {
 	struct rq_flags rf;
@@ -4927,12 +4938,14 @@ void wake_up_new_task(struct task_struct *p)
 	 */
 	p->recent_used_cpu = task_cpu(p);
 	rseq_migrate(p);
+	// 指定p的CPU
 	__set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));
 #endif
 	rq = __task_rq_lock(p, &rf);
 	update_rq_clock(rq);
 	post_init_entity_util_avg(p);
 
+	// 激活任务，将任务加入rq
 	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	trace_sched_wakeup_new(p);
 	wakeup_preempt(rq, p, WF_FORK);
@@ -5556,13 +5569,15 @@ unsigned int nr_iowait(void)
  * sched_exec - execve() is a valuable balancing opportunity, because at
  * this point the task has the smallest effective memory and cache footprint.
  */
+// exec具体实现方式，实现创建子进程代替父进程
 void sched_exec(void)
 {
-	struct task_struct *p = current;
+	struct task_struct *p = current; // 直接等于当前进程，直接替代
 	struct migration_arg arg;
 	int dest_cpu;
 
 	scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
+		// exec在这里选择cpu
 		dest_cpu = p->sched_class->select_task_rq(p, task_cpu(p), WF_EXEC);
 		if (dest_cpu == smp_processor_id())
 			return;
@@ -6050,12 +6065,14 @@ static void put_prev_task_balance(struct rq *rq, struct task_struct *prev,
 /*
  * Pick up the highest-prio task:
  */
+// 通用的选择下一个任务
 static inline struct task_struct *
 __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	const struct sched_class *class;
 	struct task_struct *p;
 
+	// 是否启用scx，如果有就先走scx的流程而不走优先级更高的cfs
 	if (scx_enabled())
 		goto restart;
 
@@ -6065,10 +6082,14 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * higher scheduling class, because otherwise those lose the
 	 * opportunity to pull in more work from other CPUs.
 	 */
+	/*
+	如果未启用scx：只有dl、rt、idle、cfs四类
+	之前调度类优先级不比CFS高，且rq上的任务数量和CFS的任务数量相同（说明没有其他任务，都是CFS）则使用cfs的pick_next_rq_fair；若未选到p则pick_next_task_idle 
+	*/
 	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
 		   rq->nr_running == rq->cfs.h_nr_running)) {
 
-		p = pick_next_task_fair(rq, prev, rf);
+		p = pick_next_task_fair(rq, prev, rf); // 启动cfs的pick_next_task
 		if (unlikely(p == RETRY_TASK))
 			goto restart;
 
@@ -6081,12 +6102,18 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		return p;
 	}
 
+// 若启用scx框架则跳转到这里执行
 restart:
+	// 先负载均衡balance，再把之前的任务prev放回队列，离开CPU（原来的调度类是哪个队列就放回哪个），可以修改这个函数实现要放到global还是local队列
 	put_prev_task_balance(rq, prev, rf);
 
+	// 在每个调度类上都会进行属于自己的pick_next_task
 	for_each_active_class(class) {
 		p = class->pick_next_task(rq);
+		// 表示选出来了任务：因为有可能选不出来
 		if (p) {
+			// 看一下在该调度程序上选的任务优先级是不是比scx高，如果高的话，scx被抢占，调用cpu_release放弃CPU
+			// 进程选用的调度类会保存在描述进程的结构体task_struct里的sched_class中policy字段，所以只要还有scx任务，其他policy优先级高的任务执行完还会执行scx任务
 			scx_notify_pick_next_task(rq, p, class);
 			return p;
 		}
@@ -6132,6 +6159,7 @@ extern void task_vruntime_update(struct rq *rq, struct task_struct *p, bool in_f
 
 static void queue_core_balance(struct rq *rq);
 
+// 会调用__pick_next_task
 static struct task_struct *
 pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
@@ -6725,6 +6753,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		switch_count = &prev->nvcsw;
 	}
 
+	// 实现选任务
 	next = pick_next_task(rq, prev, &rf);
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
@@ -6836,11 +6865,13 @@ static __always_inline void __schedule_loop(unsigned int sched_mode)
 {
 	do {
 		preempt_disable();
-		__schedule(sched_mode);
+		__schedule(sched_mode); // 调度函数
 		sched_preempt_enable_no_resched();
 	} while (need_resched());
 }
 
+// 只要有调度任务，CPU上每个核都会跑
+// 是一个宏观的调度框架，每个调度类都会走这个流程
 asmlinkage __visible void __sched schedule(void)
 {
 	struct task_struct *tsk = current;
@@ -6851,7 +6882,7 @@ asmlinkage __visible void __sched schedule(void)
 
 	if (!task_is_running(tsk))
 		sched_submit_work(tsk);
-	__schedule_loop(SM_NONE);
+	__schedule_loop(SM_NONE); // 调度函数
 	sched_update_worker(tsk);
 }
 EXPORT_SYMBOL(schedule);
@@ -9961,6 +9992,8 @@ LIST_HEAD(task_groups);
 static struct kmem_cache *task_group_cache __read_mostly;
 #endif
 
+// 设置各个调度类的优先级，初始化各个调度类
+// __init注释告诉kernel，该函数只在初始化阶段使用，用完后占用的内存资源会释放
 void __init sched_init(void)
 {
 	unsigned long ptr = 0;
@@ -9970,9 +10003,13 @@ void __init sched_init(void)
 #ifdef CONFIG_SMP
 	BUG_ON(!sched_class_above(&stop_sched_class, &dl_sched_class));
 #endif
+
+	// 没启动scx时的优先级：dl>rt>cfs>idle
 	BUG_ON(!sched_class_above(&dl_sched_class, &rt_sched_class));
 	BUG_ON(!sched_class_above(&rt_sched_class, &fair_sched_class));
 	BUG_ON(!sched_class_above(&fair_sched_class, &idle_sched_class));
+	
+	// 启动scx时调度类优先级顺序：cfs>scx>idle
 #ifdef CONFIG_SCHED_CLASS_EXT
 	BUG_ON(!sched_class_above(&fair_sched_class, &ext_sched_class));
 	BUG_ON(!sched_class_above(&ext_sched_class, &idle_sched_class));
@@ -10147,7 +10184,7 @@ void __init sched_init(void)
 	balance_push_set(smp_processor_id(), false);
 #endif
 	init_sched_fair_class();
-	init_sched_ext_class();
+	init_sched_ext_class(); // 初始化SCX调度类
 
 	psi_init();
 
