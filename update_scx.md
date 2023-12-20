@@ -18,6 +18,6 @@ git diff main origin/sched_ext | less：通过分页查看更改结果，包括�
 
 # 本地代码和自己的备份库同步
 
-git remote add scx_private git@github.com:L-811/sched_ext.git：添加自己备份库的git引用
+git remote add L_sched_ext git@github.com:L-811/L_sched_ext.git：添加自己备份库的git引用
 
-git push scx_private main：将本地仓库中的内容推送到备份库
+git push L_sched_ext sched_ext：将本地仓库中的内容推送到备份库
