@@ -24,4 +24,4 @@ git commit -m "做了什么 on date日期"
 
 git remote add L_sched_ext git@github.com:L-811/L_sched_ext.git：添加自己备份库的git引用
 
-git push L_sched_ext main：将本地仓库中的内容推送到备份库
+git push L_sched_ext main：将本地仓库中的内容推送到备份库；此时直接完成更改，不需要提pr，因为主分支就是main
