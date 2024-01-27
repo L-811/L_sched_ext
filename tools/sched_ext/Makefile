@@ -185,7 +185,8 @@ SCX_COMMON_DEPS := include/scx/common.h include/scx/user_exit_info.h | $(BINDIR)
 # C schedulers #
 ################
 c-sched-targets = scx_simple scx_qmap scx_central scx_pair scx_flatcg		\
-		  scx_userland
+		  scx_userland	\
+		  self_prio_scx_simple	\
 
 $(addprefix $(BINDIR)/,$(c-sched-targets)): \
 	$(BINDIR)/%: \

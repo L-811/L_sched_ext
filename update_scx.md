@@ -1,5 +1,7 @@
 # 本地代码和scx官方仓库同步
 
+目前还是按照原版本不更新（更新会出错），GitHub只用来备份
+
 git fetch origin：拉取远程分支
 
 git checkout main：因为本地是main分支，所以要切换到它
@@ -20,7 +22,7 @@ git diff main origin/sched_ext | less：通过分页查看更改结果，包括�
 
 git add .
 
-git commit -m "做了什么 on date日期"
+git commit -m "做了什么 on date日期"：本地有自己的修改才需要做该操作，如果是远程fork的代码更新就不需要
 
 git remote add L_sched_ext git@github.com:L-811/L_sched_ext.git：添加自己备份库的git引用
 
