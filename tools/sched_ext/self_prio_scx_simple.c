@@ -70,9 +70,12 @@ static void read_stats(struct self_prio_scx_simple *skel, __u64 *stats)
 // 设置调度器并打印优先级信息的函数
 void set_scheduler_and_print_priority(int priority) {
     pid_t pid = getpid();
+
+	// 描述进程可使用的调度类
     struct sched_param sched_param = {
         .sched_priority = sched_get_priority_max(SCHED_EXT),
     };
+
     int err;
     err = syscall(__NR_sched_setscheduler, pid, SCHED_EXT, &sched_param);
     SCX_BUG_ON(err, "Failed to set scheduler to SCHED_EXT");
@@ -80,37 +83,18 @@ void set_scheduler_and_print_priority(int priority) {
     int my_prio = getpriority(PRIO_PROCESS, pid);
     printf("before set prio : %d \n", my_prio);
 
-    setpriority(PRIO_PROCESS, getpid(), priority);
+    setpriority(PRIO_PROCESS, pid, priority);
 
-    my_prio = getpriority(PRIO_PROCESS, getpid());
+    my_prio = getpriority(PRIO_PROCESS, pid);
     printf("after set prio : %d \n", my_prio);
 
-	bpf_map_update_elem(map_fd, &pid, &priority, BPF_ANY);//优先级信息存入map
+	// 优先级信息存入map
+	bpf_map_update_elem(map_fd, &pid, &priority, BPF_ANY);
 
     while (1) {
         printf("I'm task%d my pid: %d\n", priority, pid);
         sleep(5);
     }
-}
-
-// 执行任务1的函数
-void perform_task1() {
-    set_scheduler_and_print_priority(15);//数字越大优先级越低
-}
-
-// 执行任务2的函数
-void perform_task2() {
-    set_scheduler_and_print_priority(15);
-}
-
-// 执行任务3的函数
-void perform_task3() {
-    set_scheduler_and_print_priority(8);
-}
-
-// 执行任务4的函数
-void perform_task4() {
-    set_scheduler_and_print_priority(8);
 }
 
 int main(int argc, char **argv)
@@ -149,9 +133,10 @@ int main(int argc, char **argv)
 	//2024-1-17
 	printf("****************创建进程并将将优先级的值注入map*******************\n");
 
+	// 获取map文件描述符
 	map_fd = bpf_map__fd(skel->maps.my_map);
 
-
+	// 在这里创建进程
 	s32 pid1, pid2, pid3, pid4;
 
     pid1 = fork();
@@ -181,9 +166,6 @@ int main(int argc, char **argv)
         set_scheduler_and_print_priority(8);
         exit(0);
     }
-
-    
-	//2024-1-17
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		__u64 stats[2];

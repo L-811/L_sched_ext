@@ -32,10 +32,11 @@ struct user_exit_info uei;
 
 #define SHARED_DSQ 0
 
+// 需要自己创建一个map保存参数
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(key_size, sizeof(s32));//任务的id
-    __uint(value_size, sizeof(u32));//1234--代表该进入哪种队列
+    __uint(key_size, sizeof(s32));// 任务的id
+    __uint(value_size, sizeof(u32));// 1234--代表该进入哪种队列
     __uint(max_entries, 4);  /* Adjust the size according to your needs */
 } my_map SEC(".maps");
 
